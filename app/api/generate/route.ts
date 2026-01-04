@@ -54,22 +54,25 @@ export async function POST(request: NextRequest) {
       {
         "id": number (1, 2, 3, 4),
         "time": string (e.g., "9:00 AM"),
-        "title": string (place name),
-        "description": string (2-3 sentences about the place),
-        "image_keyword": string (search term for finding a photo, e.g., "tokyo temple", "italian pasta"),
-        "address": string (full street address),
+        "title": string (place name - must not be empty),
+        "description": string (2-3 sentences about the place - must not be empty),
+        "image_keyword": string (search term for finding a photo, e.g., "tokyo temple", "italian pasta" - must not be empty),
+        "address": string (full street address - must not be empty),
         "coordinates": { "lat": number, "lng": number },
-        "stops": array of strings (nearby points of interest, can be empty),
-        "color": string (one of: blue, orange, purple, red, green, indigo),
-        "travelTimeFromPrevious": string (estimated travel time from previous stop, e.g., "15 min drive", "10 min walk", null for first stop)
+        "stops": array of strings (2-3 nearby points of interest, use empty array [] if none),
+        "color": string (one of: "blue", "orange", "purple", "red", "green", "indigo"),
+        "travelTimeFromPrevious": string (travel time from previous stop, e.g., "15 min drive", "10 min walk" - omit this field entirely for the first stop)
       }
 
-      Important:
+      CRITICAL RULES:
+      - Never use null values - use empty strings "" or empty arrays [] instead
+      - All string fields must have actual content, not empty strings (except travelTimeFromPrevious which should be omitted for first stop)
       - Use real, existing places that can be found on Google Maps
-      - Addresses should be accurate and complete
-      - Image keywords should be descriptive for finding relevant photos
-      - Colors should vary between stops for visual distinction
+      - Addresses should be accurate and complete with street, city, and country
+      - Image keywords should be descriptive for finding relevant photos (include location context)
+      - Colors must vary between stops for visual distinction
       - Travel times should be realistic estimates based on typical transport methods
+      - Coordinates must be accurate latitude/longitude for the actual location
     `;
 
     const result = await model.generateContent(prompt);
@@ -85,7 +88,9 @@ export async function POST(request: NextRequest) {
     let rawData;
     try {
       rawData = JSON.parse(cleanJson);
-    } catch {
+    } catch (parseError) {
+      console.error("JSON parse error:", parseError);
+      console.error("Raw response:", cleanJson.substring(0, 500));
       return NextResponse.json<GenerateResponse>(
         { success: false, error: "AI returned invalid JSON" },
         { status: 500 }
@@ -97,6 +102,8 @@ export async function POST(request: NextRequest) {
     try {
       validatedData = parseItineraryResponse(rawData);
     } catch (error) {
+      console.error("Validation error:", error);
+      console.error("Raw data:", JSON.stringify(rawData, null, 2).substring(0, 1000));
       return NextResponse.json<GenerateResponse>(
         { success: false, error: error instanceof Error ? error.message : "Validation failed" },
         { status: 500 }

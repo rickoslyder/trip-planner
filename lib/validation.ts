@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+// Helper to convert null to undefined for optional fields
+const nullToUndefined = <T>(schema: z.ZodType<T>) =>
+  z.union([schema, z.null()]).transform((val) => (val === null ? undefined : val));
+
 export const CoordinateSchema = z.object({
   lat: z.number(),
   lng: z.number(),
@@ -12,12 +16,14 @@ export const ItineraryStepSchema = z.object({
   description: z.string(),
   image_keyword: z.string(),
   address: z.string(),
-  coordinates: CoordinateSchema.optional(),
-  stops: z.array(z.string()).default([]),
-  color: z.string().default("blue"),
+  // Gemini may return null for optional fields - handle gracefully
+  coordinates: nullToUndefined(CoordinateSchema).optional(),
+  stops: z.array(z.string()).nullable().default([]).transform((val) => val ?? []),
+  color: z.string().nullable().default("blue").transform((val) => val ?? "blue"),
   imageUrl: z.string().optional(), // Added by server after Pexels fetch
   notes: z.string().optional(), // User's personal notes
-  travelTimeFromPrevious: z.string().optional(), // e.g., "15 min drive"
+  // Field may be absent, null, or a string - handle all cases
+  travelTimeFromPrevious: z.string().nullable().optional().transform((val) => val ?? undefined),
 });
 
 export const ItineraryResponseSchema = z.array(ItineraryStepSchema);
