@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI, Content } from "@google/genai";
 import { ChatRequest, ChatResponse } from "@/types";
 
-const MODEL_ID = "gemini-2.0-flash";
+// Use Gemini 3 Flash for chat - latest model with Google Search grounding
+const MODEL_ID = "gemini-3-flash-preview";
 
 export async function POST(request: NextRequest) {
   try {

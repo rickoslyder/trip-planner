@@ -4,7 +4,55 @@ import { parseItineraryResponse } from "@/lib/validation";
 import { fetchImagesForItinerary } from "@/lib/pexels";
 import { GenerateRequest, GenerateResponse, ItineraryStep } from "@/types";
 
-const MODEL_ID = "gemini-2.0-flash";
+// Stage 1: Gemini 2.5 Flash with Google Maps grounding for accurate place data
+const GROUNDING_MODEL = "gemini-2.5-flash";
+// Stage 2: Gemini 2.5 Flash Lite for cheap/fast JSON conversion
+const JSON_MODEL = "gemini-2.5-flash-lite";
+
+/**
+ * Extract a balanced JSON array from a string that may contain extra content.
+ * Uses bracket counting to find the complete array even when followed by metadata.
+ */
+function extractJsonArray(text: string): string | null {
+  const startIndex = text.indexOf("[");
+  if (startIndex === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = startIndex; i < text.length; i++) {
+    const char = text[i];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escapeNext = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === "[") {
+      depth++;
+    } else if (char === "]") {
+      depth--;
+      if (depth === 0) {
+        return text.substring(startIndex, i + 1);
+      }
+    }
+  }
+
+  return null; // Unbalanced brackets
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -34,7 +82,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Initialize new GenAI client
+    // Initialize GenAI client
     const ai = new GoogleGenAI({ apiKey });
 
     // Build the style description for the prompt
@@ -42,66 +90,120 @@ export async function POST(request: NextRequest) {
       ? customStyle
       : style;
 
-    const prompt = `
+    // ============================================================
+    // STAGE 1: Get grounded place recommendations with Google Maps
+    // ============================================================
+    const groundingPrompt = `
       Create a 1-day itinerary for a trip to ${city}, focusing on ${styleDescription}, starting from "${basecamp}".
 
-      Return ONLY a valid JSON array of exactly 4 stops. Each stop must have this exact structure:
-      {
-        "id": number (1, 2, 3, 4),
-        "time": string (e.g., "9:00 AM"),
-        "title": string (place name - must not be empty),
-        "description": string (2-3 sentences about the place - must not be empty),
-        "image_keyword": string (search term for finding a photo, e.g., "tokyo temple", "italian pasta" - must not be empty),
-        "address": string (full street address - must not be empty),
-        "coordinates": { "lat": number, "lng": number },
-        "stops": array of strings (2-3 nearby points of interest, use empty array [] if none),
-        "color": string (one of: "blue", "orange", "purple", "red", "green", "indigo"),
-        "travelTimeFromPrevious": string (travel time from previous stop, e.g., "15 min drive", "10 min walk" - omit this field entirely for the first stop)
-      }
+      Recommend exactly 4 real places to visit. For each place, provide:
+      - The exact name of the place
+      - A 2-3 sentence description
+      - The full street address
+      - Approximate coordinates (latitude, longitude)
+      - 2-3 nearby points of interest
+      - Estimated travel time from the previous stop
 
-      CRITICAL RULES:
-      - Never use null values - use empty strings "" or empty arrays [] instead
-      - All string fields must have actual content, not empty strings (except travelTimeFromPrevious which should be omitted for first stop)
-      - Use real, existing places that can be found on Google Maps
-      - Addresses should be accurate and complete with street, city, and country
-      - Image keywords should be descriptive for finding relevant photos (include location context)
-      - Colors must vary between stops for visual distinction
-      - Travel times should be realistic estimates based on typical transport methods
-      - Coordinates must be accurate latitude/longitude for the actual location
+      Use accurate, real information from Google Maps. Only recommend places that actually exist.
     `;
 
-    // Call Gemini to generate itinerary
-    // Note: Grounding tools are disabled here because they add metadata that
-    // interferes with JSON parsing. The prompt itself instructs the model to
-    // use accurate Google Maps data.
-    const response = await ai.models.generateContent({
-      model: MODEL_ID,
-      contents: prompt,
+    const groundedResponse = await ai.models.generateContent({
+      model: GROUNDING_MODEL,
+      contents: groundingPrompt,
       config: {
-        // Request JSON output - grounding disabled to ensure clean JSON response
+        tools: [{ googleMaps: {} }],
+      },
+    });
+
+    const groundedText = groundedResponse.text ?? "";
+
+    // Log grounding metadata
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const candidate = (groundedResponse as any).candidates?.[0];
+    if (candidate?.groundingMetadata) {
+      const gm = candidate.groundingMetadata;
+      console.log("Grounding metadata:", JSON.stringify({
+        chunks: gm.groundingChunks?.length ?? 0,
+        supports: gm.groundingSupports?.length ?? 0,
+        hasWidget: !!gm.googleMapsWidgetContextToken,
+      }));
+    }
+
+    // ============================================================
+    // STAGE 2: Convert to structured JSON with Flash Lite
+    // ============================================================
+    const jsonPrompt = `
+      Convert the following trip itinerary into a JSON array.
+
+      Input itinerary:
+      ${groundedText}
+
+      Output format - Return ONLY a valid JSON array with exactly 4 objects:
+      [
+        {
+          "id": 1,
+          "time": "9:00 AM",
+          "title": "Place Name",
+          "description": "2-3 sentence description",
+          "image_keyword": "search term for photo (e.g., 'tokyo temple', 'paris cafe')",
+          "address": "Full street address",
+          "coordinates": { "lat": number, "lng": number },
+          "stops": ["nearby point 1", "nearby point 2"],
+          "color": "blue",
+          "travelTimeFromPrevious": "15 min walk"
+        }
+      ]
+
+      Rules:
+      - id: sequential 1-4
+      - time: spread throughout day starting 9:00 AM
+      - color: use different colors (blue, orange, purple, red, green, indigo)
+      - travelTimeFromPrevious: omit for first stop, include for others
+      - image_keyword: descriptive search term including location context
+      - Never use null values
+    `;
+
+    const jsonResponse = await ai.models.generateContent({
+      model: JSON_MODEL,
+      contents: jsonPrompt,
+      config: {
         responseMimeType: "application/json",
       },
     });
 
-    const responseText = response.text ?? "";
+    const responseText = jsonResponse.text ?? "";
 
-    // Clean up the response (remove markdown code fences if present)
+    // Clean up the response
     let cleanJson = responseText
       .replace(/```json/g, "")
       .replace(/```/g, "")
       .trim();
 
-    // Parse JSON
+    // Robust JSON array extraction
     let rawData;
     try {
       rawData = JSON.parse(cleanJson);
-    } catch (parseError) {
-      console.error("JSON parse error:", parseError);
-      console.error("Raw response:", cleanJson.substring(0, 500));
-      return NextResponse.json<GenerateResponse>(
-        { success: false, error: "AI returned invalid JSON" },
-        { status: 500 }
-      );
+    } catch {
+      const extracted = extractJsonArray(cleanJson);
+      if (extracted) {
+        try {
+          rawData = JSON.parse(extracted);
+        } catch (parseError) {
+          console.error("JSON parse error after extraction:", parseError);
+          console.error("Extracted JSON:", extracted.substring(0, 500));
+          return NextResponse.json<GenerateResponse>(
+            { success: false, error: "Failed to parse itinerary" },
+            { status: 500 }
+          );
+        }
+      } else {
+        console.error("Could not extract JSON array from response");
+        console.error("Raw response:", cleanJson.substring(0, 500));
+        return NextResponse.json<GenerateResponse>(
+          { success: false, error: "Failed to parse itinerary" },
+          { status: 500 }
+        );
+      }
     }
 
     // Validate with Zod
