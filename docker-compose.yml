@@ -1,0 +1,21 @@
+services:
+  trip-planner:
+    image: trip-planner:latest
+    container_name: trip-planner
+    restart: unless-stopped
+    networks:
+      - default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.trip-planner-http.rule=Host(`trip-planner.rbnk.uk`)"
+      - "traefik.http.routers.trip-planner-http.entrypoints=web"
+      - "traefik.http.routers.trip-planner-http.middlewares=redirect-to-https@file"
+      - "traefik.http.routers.trip-planner.rule=Host(`trip-planner.rbnk.uk`)"
+      - "traefik.http.routers.trip-planner.entrypoints=websecure"
+      - "traefik.http.routers.trip-planner.tls.certresolver=cf"
+      - "traefik.http.services.trip-planner.loadbalancer.server.port=3000"
+
+networks:
+  default:
+    name: traefik_proxy
+    external: true
