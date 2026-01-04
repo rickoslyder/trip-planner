@@ -3,6 +3,8 @@ services:
     image: trip-planner:latest
     container_name: trip-planner
     restart: unless-stopped
+    env_file:
+      - .env.local
     networks:
       - default
     labels:
