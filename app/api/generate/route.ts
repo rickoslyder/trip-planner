@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import { parseItineraryResponse } from "@/lib/validation";
 import { fetchImagesForItinerary } from "@/lib/pexels";
 import { GenerateRequest, GenerateResponse, ItineraryStep } from "@/types";
@@ -34,13 +34,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-      model: MODEL_ID,
-      generationConfig: {
-        responseMimeType: "application/json",
-      },
-    });
+    // Initialize new GenAI client
+    const ai = new GoogleGenAI({ apiKey });
 
     // Build the style description for the prompt
     const styleDescription = style === "custom" && customStyle
@@ -75,10 +70,22 @@ export async function POST(request: NextRequest) {
       - Coordinates must be accurate latitude/longitude for the actual location
     `;
 
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
+    // Call Gemini to generate itinerary
+    // Note: Grounding tools are disabled here because they add metadata that
+    // interferes with JSON parsing. The prompt itself instructs the model to
+    // use accurate Google Maps data.
+    const response = await ai.models.generateContent({
+      model: MODEL_ID,
+      contents: prompt,
+      config: {
+        // Request JSON output - grounding disabled to ensure clean JSON response
+        responseMimeType: "application/json",
+      },
+    });
 
-    // Clean up the response
+    const responseText = response.text ?? "";
+
+    // Clean up the response (remove markdown code fences if present)
     let cleanJson = responseText
       .replace(/```json/g, "")
       .replace(/```/g, "")

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI, Content } from "@google/genai";
 import { ChatRequest, ChatResponse } from "@/types";
 
 const MODEL_ID = "gemini-2.0-flash";
@@ -24,8 +24,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: MODEL_ID });
+    const ai = new GoogleGenAI({ apiKey });
 
     // Build context that includes itinerary information
     let context = `You are a helpful travel assistant. The user is planning a trip to ${city} and staying at "${basecamp}".`;
@@ -43,22 +42,39 @@ export async function POST(request: NextRequest) {
       context += "\n\nYou can reference these stops when answering questions.";
     }
 
-    // Start chat with history
-    const chat = model.startChat({
-      history: history.length > 0 ? history : [
-        {
-          role: "user",
-          parts: [{ text: context }],
-        },
-        {
-          role: "model",
-          parts: [{ text: `I understand! I'm here to help you with your trip to ${city}. I can see your itinerary and I'm ready to answer any questions about the places you'll visit, give recommendations, or help with logistics. What would you like to know?` }],
-        },
-      ],
+    // Build chat history in the new format
+    const chatHistory: Content[] = history.length > 0
+      ? history.map(h => ({
+          role: h.role as "user" | "model",
+          parts: h.parts,
+        }))
+      : [
+          {
+            role: "user" as const,
+            parts: [{ text: context }],
+          },
+          {
+            role: "model" as const,
+            parts: [{ text: `I understand! I'm here to help you with your trip to ${city}. I can see your itinerary and I'm ready to answer any questions about the places you'll visit, give recommendations, or help with logistics. What would you like to know?` }],
+          },
+        ];
+
+    // Create chat session
+    const chat = ai.chats.create({
+      model: MODEL_ID,
+      history: chatHistory,
+      config: {
+        // Enable grounding with Google Search for real-time info about places
+        tools: [{ googleSearch: {} }],
+      },
     });
 
-    const result = await chat.sendMessage(message);
-    const responseText = result.response.text();
+    // Send the message
+    const response = await chat.sendMessage({
+      message,
+    });
+
+    const responseText = response.text ?? "";
 
     return NextResponse.json<ChatResponse>({
       success: true,
